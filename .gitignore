@@ -1,0 +1,21 @@
+.DS_Store
+*.log
+*.db
+data/
+logs/
+bin/
+pids.txt
+*.swp
+*.swo
+*~
+
+# Go specific
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+go.sum
