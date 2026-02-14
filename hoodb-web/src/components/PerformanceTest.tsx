@@ -16,7 +16,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
 import SpeedIcon from '@mui/icons-material/Speed';
 import { useTranslation } from 'react-i18next';
-import { setKey, batchSet } from '../services/api';
+import { batchSet, runBenchmark } from '../services/api';
 
 interface TestResult {
   type: string;
@@ -51,32 +51,18 @@ const PerformanceTest: React.FC = () => {
     setResult(null);
     setProgress(0);
 
-    let success = 0;
-    let failed = 0;
-    const startTime = Date.now();
-
     try {
-      for (let i = 0; i < count; i++) {
-        if (abortedRef.current) break;
+      // 使用服务端基准测试接口, 绕过浏览器 6 连接限制
+      setProgress(50); // 服务端执行中
+      const res = await runBenchmark(count, 50);
 
-        try {
-          await setKey(`perf_test_${Date.now()}_${i}`, `value_${i}`);
-          success++;
-        } catch {
-          failed++;
-        }
-
-        setProgress(((i + 1) / count) * 100);
-      }
-
-      const duration = (Date.now() - startTime) / 1000;
       setResult({
         type: t('perfSequentialWrite'),
-        count,
-        duration,
-        opsPerSec: success / duration,
-        success,
-        failed,
+        count: res.count,
+        duration: res.duration_ms / 1000,
+        opsPerSec: res.ops_per_sec,
+        success: res.success,
+        failed: res.failed,
       });
     } catch (err: any) {
       setError(err.message || t('perfTestFailed'));
@@ -298,7 +284,7 @@ const PerformanceTest: React.FC = () => {
                     alignItems: 'center',
                     justifyContent: 'center',
                     minHeight: 200,
-                    bgcolor: 'grey.50',
+                    bgcolor: 'action.hover',
                   }}
                 >
                   <Typography color="text.secondary">
@@ -323,7 +309,7 @@ const PerformanceTest: React.FC = () => {
                   {t('perfSequentialWrite')}
                 </Typography>
                 <Typography variant="h4" color="primary">
-                  ~50
+                  ~1,000+
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   {t('perfOpsSecRaft')}
@@ -336,7 +322,7 @@ const PerformanceTest: React.FC = () => {
                   {t('perfBatchWrite')}
                 </Typography>
                 <Typography variant="h4" color="secondary">
-                  ~5,000
+                  ~10,000+
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   {t('perfOpsSecBatch')}

@@ -194,7 +194,7 @@ const ClusterStatus: React.FC = () => {
                 <Typography variant="h6" gutterBottom>
                   {t('clusterDetailedStats')}
                 </Typography>
-                <Paper variant="outlined" sx={{ p: 2, bgcolor: 'grey.50' }}>
+                <Paper variant="outlined" sx={{ p: 2, bgcolor: 'action.hover' }}>
                   <Grid container spacing={2}>
                     {stats.raftStats &&
                       Object.entries(stats.raftStats).map(([key, value]) => (

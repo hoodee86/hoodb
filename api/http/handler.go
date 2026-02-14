@@ -2,7 +2,6 @@ package http
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -49,6 +48,9 @@ func (h *Handler) SetupRoutes() *gin.Engine {
 
 	// 批量操作接口
 	r.POST("/kv/batch", h.BatchPut)
+
+	// 基准测试接口
+	r.POST("/benchmark", h.RunBenchmark)
 
 	// 状态接口
 	r.GET("/status", h.GetStatus)
@@ -151,20 +153,9 @@ func (h *Handler) PutKey(c *gin.Context) {
 
 // BatchPut 批量设置key-value (单次Raft提交)
 func (h *Handler) BatchPut(c *gin.Context) {
-	// 先尝试绑定JSON
 	var req BatchPutRequest
 
-	// 手动读取body以便更好的错误处理
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil || len(body) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid request body",
-		})
-		return
-	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
-		// 如果标准绑定失败，尝试重新绑定
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "invalid request body, expected {\"items\": {\"key1\": \"val1\", ...}}",
 		})
@@ -186,7 +177,7 @@ func (h *Handler) BatchPut(c *gin.Context) {
 		return
 	}
 
-	err = h.retryOnLeaderChange(func() error {
+	err := h.retryOnLeaderChange(func() error {
 		return h.kv.BatchSet(req.Items)
 	})
 
@@ -248,6 +239,32 @@ func (h *Handler) DeleteKey(c *gin.Context) {
 		"message": "deleted",
 		"key":     key,
 	})
+}
+
+// RunBenchmark 服务端基准测试
+func (h *Handler) RunBenchmark(c *gin.Context) {
+	var req struct {
+		Count       int `json:"count"`
+		Concurrency int `json:"concurrency"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Count <= 0 {
+		req.Count = 5000
+	}
+	if req.Concurrency <= 0 {
+		req.Concurrency = 50
+	}
+
+	result, err := h.kv.RunBenchmark(req.Count, req.Concurrency)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 // GetStatus 获取节点状态

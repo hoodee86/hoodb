@@ -58,4 +58,18 @@ export const healthCheck = async (): Promise<{ status: string }> => {
   return response.data;
 };
 
+// Benchmark
+export interface BenchmarkResult {
+  count: number;
+  success: number;
+  failed: number;
+  duration_ms: number;
+  ops_per_sec: number;
+}
+
+export const runBenchmark = async (count: number, concurrency: number): Promise<BenchmarkResult> => {
+  const response = await api.post('/benchmark', { count, concurrency }, { timeout: 120000 });
+  return response.data;
+};
+
 export default api;

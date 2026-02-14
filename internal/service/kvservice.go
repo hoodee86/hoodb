@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -50,8 +51,8 @@ func NewKVService(dataDir string, nodeID string, raftAddr string, peers []string
 
 	kv.raft = raftNode
 
-	// 创建写入批处理器 (合并并发写入提升吐量)
-	kv.batcher = newWriteBatcher(kv, 50, 2*time.Millisecond)
+	// 创建写入批处理器 (合并并发写入提升吞吐量, 流水线架构)
+	kv.batcher = newWriteBatcher(kv, 200)
 
 	// 如果是第一个节点，进行Bootstrap
 	if nodeID == "node1" {
@@ -158,18 +159,77 @@ func (kv *KVService) Delete(key string) error {
 	return nil
 }
 
+// BenchmarkResult 服务端基准测试结果
+type BenchmarkResult struct {
+	Count     int     `json:"count"`
+	Success   int     `json:"success"`
+	Failed    int     `json:"failed"`
+	Millis    float64 `json:"duration_ms"`
+	OpsPerSec float64 `json:"ops_per_sec"`
+}
+
+// RunBenchmark 在服务端直接执行写入基准测试
+// 绕过 HTTP 连接数限制, 准确测量 Raft 写入吞吐量
+func (kv *KVService) RunBenchmark(count, concurrency int) (*BenchmarkResult, error) {
+	if !kv.raft.IsLeader() {
+		return nil, fmt.Errorf("not leader, leader is: %s", kv.raft.GetLeader())
+	}
+
+	var success, failed int64
+	var wg sync.WaitGroup
+
+	// 使用 channel 分发任务
+	tasks := make(chan int, count)
+	for i := 0; i < count; i++ {
+		tasks <- i
+	}
+	close(tasks)
+
+	start := time.Now()
+
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range tasks {
+				key := fmt.Sprintf("bench_%d_%d", start.UnixNano(), i)
+				value := fmt.Sprintf("val_%d", i)
+				if err := kv.batcher.Submit(key, value); err != nil {
+					atomic.AddInt64(&failed, 1)
+				} else {
+					atomic.AddInt64(&success, 1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	dur := time.Since(start)
+
+	s := int(atomic.LoadInt64(&success))
+	f := int(atomic.LoadInt64(&failed))
+	ms := float64(dur.Nanoseconds()) / 1e6
+
+	return &BenchmarkResult{
+		Count:     count,
+		Success:   s,
+		Failed:    f,
+		Millis:    ms,
+		OpsPerSec: float64(s) / dur.Seconds(),
+	}, nil
+}
+
 // ===== 实现raft.FSM接口 =====
 
 // Apply 应用Raft日志到状态机
+// 注意: Raft 保证 Apply 是串行调用的, 无需对 Pebble 写入加锁
+// (Pebble 本身也是线程安全的), 仅 Snapshot/Restore 需要互斥
 func (kv *KVService) Apply(log *hraft.Log) interface{} {
 	var cmd raft.Command
 	if err := json.Unmarshal(log.Data, &cmd); err != nil {
 		kv.logger.Printf("Failed to unmarshal command: %v", err)
 		return err
 	}
-
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 
 	switch cmd.Op {
 	case "set":

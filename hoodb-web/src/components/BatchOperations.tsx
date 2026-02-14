@@ -140,7 +140,7 @@ const BatchOperations: React.FC = () => {
               p: 2,
               maxHeight: 400,
               overflow: 'auto',
-              bgcolor: 'grey.50',
+              bgcolor: 'action.hover',
             }}
           >
             {pairs.map((pair, index) => (

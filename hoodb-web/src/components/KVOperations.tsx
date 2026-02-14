@@ -191,7 +191,7 @@ const KVOperations: React.FC = () => {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    bgcolor: 'grey.50',
+                    bgcolor: 'action.hover',
                   }}
                 >
                   <Typography color="text.secondary">
