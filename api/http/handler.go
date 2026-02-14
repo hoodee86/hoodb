@@ -28,6 +28,20 @@ func (h *Handler) SetupRoutes() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
+	// CORS中间件
+	r.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+
+		c.Next()
+	})
+
 	// KV操作接口
 	r.PUT("/kv/:key", h.PutKey)
 	r.GET("/kv/:key", h.GetKey)
@@ -38,6 +52,7 @@ func (h *Handler) SetupRoutes() *gin.Engine {
 
 	// 状态接口
 	r.GET("/status", h.GetStatus)
+	r.GET("/cluster/stats", h.GetStatus)
 	r.GET("/health", h.HealthCheck)
 
 	return r

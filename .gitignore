@@ -1,13 +1,30 @@
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Logs
 *.log
-*.db
-data/
 logs/
-bin/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Process files
 pids.txt
+*.pid
+*.seed
+
+# Temporary files
 *.swp
 *.swo
 *~
+*.tmp
+.cache/
 
 # Go specific
 *.exe
@@ -17,5 +34,50 @@ pids.txt
 *.dylib
 *.test
 *.out
+bin/
 vendor/
 go.sum
+coverage.txt
+*.prof
+
+# Node.js (hoodb-web)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm
+.yarn-integrity
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build outputs
+build/
+dist/
+*.min.js
+*.min.css
+
+# IDE & Editors
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Coverage reports
+coverage/
+*.cover
+*.coverage
+.nyc_output/
+
+# Benchmark results
+benchmark_results/
+*.bench
