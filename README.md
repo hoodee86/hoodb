@@ -54,7 +54,7 @@ hoodb/
 │   │   ├── kvservice.go        # KV 服务核心 + FSM 实现
 │   │   └── batcher.go          # 写入批处理器（流水线架构）
 │   └── storage/pebble.go       # Pebble 存储引擎封装
-├── hoodb-web/                  # React 前端
+├── client/                     # React 前端
 │   ├── src/components/         # UI 组件
 │   ├── src/services/api.ts     # API 客户端
 │   └── src/i18n/               # 国际化 (EN/ZH)

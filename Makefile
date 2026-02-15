@@ -4,7 +4,7 @@
 APP_NAME   := hoodb
 BUILD_DIR  := bin
 CMD_DIR    := cmd/hoodb
-WEB_DIR    := hoodb-web
+WEB_DIR    := client
 
 # Go 编译标志
 LDFLAGS    := -s -w
@@ -42,9 +42,15 @@ build-web:
 test:
 	go test -race -count=1 ./...
 
-## bench: 运行性能基准测试
+## bench: 运行性能基准测试 (go test)
 bench:
 	go test -bench=. -benchmem ./internal/storage/ ./benchmark/
+
+## bench-tool: 编译并运行独立压测工具
+bench-tool: build
+	go build $(GOFLAGS) -o $(BUILD_DIR)/hoodb-bench ./cmd/bench
+	@echo "==> Running benchmark..."
+	$(BUILD_DIR)/hoodb-bench -n 10000 -c 50 -vsize 100
 
 ## run: 编译并启动 3 节点集群
 run: build
