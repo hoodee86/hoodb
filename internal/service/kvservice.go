@@ -341,11 +341,14 @@ func (kv *KVService) Restore(rc io.ReadCloser) error {
 		return fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 
-	// 恢复数据到RocksDB
-	for key, value := range data {
-		if err := kv.store.Put([]byte(key), []byte(value)); err != nil {
-			return fmt.Errorf("failed to restore key: %w", err)
-		}
+	// 先清除旧数据，确保状态机完全替换为快照状态
+	if err := kv.store.ClearAll(); err != nil {
+		kv.logger.Printf("Warning: failed to clear store before restore: %v", err)
+	}
+
+	// 使用批量写入恢复数据（NoSync，避免每条都 fsync 导致恢复极慢）
+	if err := kv.store.PutBatch(data); err != nil {
+		return fmt.Errorf("failed to restore batch: %w", err)
 	}
 
 	kv.logger.Printf("Restored %d keys from snapshot", len(data))

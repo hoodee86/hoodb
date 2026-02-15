@@ -174,6 +174,33 @@ func (s *PebbleStore) GetPath() string {
 	return s.path
 }
 
+// ClearAll 清除所有数据（用于快照恢复前清空旧状态）
+func (s *PebbleStore) ClearAll() error {
+	iter, err := s.db.NewIter(nil)
+	if err != nil {
+		return fmt.Errorf("failed to create iterator for clear: %w", err)
+	}
+	defer iter.Close()
+
+	batch := s.db.NewBatch()
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := make([]byte, len(iter.Key()))
+		copy(key, iter.Key())
+		if err := batch.Delete(key, nil); err != nil {
+			batch.Close()
+			return fmt.Errorf("failed to delete key in clear: %w", err)
+		}
+	}
+	if err := iter.Error(); err != nil {
+		batch.Close()
+		return fmt.Errorf("iterator error during clear: %w", err)
+	}
+	if err := batch.Commit(pebble.NoSync); err != nil {
+		return fmt.Errorf("failed to commit clear batch: %w", err)
+	}
+	return nil
+}
+
 // Compact 手动触发压缩
 func (s *PebbleStore) Compact() error {
 	s.mu.Lock()
