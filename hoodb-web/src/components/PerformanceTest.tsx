@@ -88,14 +88,14 @@ const PerformanceTest: React.FC = () => {
 
     const batchSize = 50;
     const batches = Math.ceil(count / batchSize);
-    let success = 0;
-    let failed = 0;
     const startTime = Date.now();
 
     try {
-      for (let b = 0; b < batches; b++) {
-        if (abortedRef.current) break;
+      // 🚀 优化：构建所有 batch 请求，然后并发发送
+      // 而不是串行等待每个请求完成
+      const batchPromises: Promise<{ success: number; failed: number }>[] = [];
 
+      for (let b = 0; b < batches; b++) {
         const items: { [key: string]: string } = {};
         const currentBatchSize = Math.min(batchSize, count - b * batchSize);
 
@@ -104,17 +104,35 @@ const PerformanceTest: React.FC = () => {
           items[`batch_test_${Date.now()}_${idx}`] = `value_${idx}`;
         }
 
-        try {
-          await batchSet(items);
-          success += currentBatchSize;
-        } catch {
-          failed += currentBatchSize;
-        }
+        // 为每个 batch 创建一个 Promise（但不等待）
+        const promise = batchSet(items)
+          .then(() => ({ success: currentBatchSize, failed: 0 }))
+          .catch(() => ({ success: 0, failed: currentBatchSize }));
 
-        setProgress(((b + 1) / batches) * 100);
+        batchPromises.push(promise);
+
+        // 更新进度条的采样率：每 5% 更新一次，避免过频繁的状态更新
+        if ((b + 1) % Math.max(1, Math.ceil(batches / 20)) === 0) {
+          setProgress(((b + 1) / batches) * 100);
+        }
       }
 
+      // 等待所有 batch 并发完成
+      const results = await Promise.allSettled(batchPromises);
       const duration = (Date.now() - startTime) / 1000;
+
+      // 统计成功和失败的数量
+      let success = 0;
+      let failed = 0;
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          success += result.value.success;
+          failed += result.value.failed;
+        } else {
+          failed += batchSize;
+        }
+      }
+
       setResult({
         type: t('perfBatchWrite'),
         count,
@@ -123,6 +141,8 @@ const PerformanceTest: React.FC = () => {
         success,
         failed,
       });
+
+      setProgress(100);
     } catch (err: any) {
       setError(err.message || t('perfTestFailed'));
     } finally {
