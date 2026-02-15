@@ -52,6 +52,11 @@ func (h *Handler) SetupRoutes() *gin.Engine {
 	// 基准测试接口
 	r.POST("/benchmark", h.RunBenchmark)
 
+	// 集群管理接口
+	r.POST("/cluster/add", h.AddNode)
+	r.POST("/cluster/remove", h.RemoveNode)
+	r.GET("/cluster/config", h.GetClusterConfig)
+
 	// 状态接口
 	r.GET("/status", h.GetStatus)
 	r.GET("/cluster/stats", h.GetStatus)
@@ -278,4 +283,77 @@ func (h *Handler) HealthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "healthy",
 	})
+}
+
+// AddNode 添加新节点到集群
+func (h *Handler) AddNode(c *gin.Context) {
+	var req struct {
+		NodeID  string `json:"node_id" binding:"required"`
+		Address string `json:"address" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 只有 Leader 可以添加节点
+	if !h.kv.IsLeader() {
+		c.JSON(http.StatusTemporaryRedirect, gin.H{
+			"error":  "not leader",
+			"leader": h.kv.GetLeader(),
+		})
+		return
+	}
+
+	if err := h.kv.AddNode(req.NodeID, req.Address); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "node added successfully",
+		"node_id": req.NodeID,
+		"address": req.Address,
+	})
+}
+
+// RemoveNode 从集群移除节点
+func (h *Handler) RemoveNode(c *gin.Context) {
+	var req struct {
+		NodeID string `json:"node_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 只有 Leader 可以移除节点
+	if !h.kv.IsLeader() {
+		c.JSON(http.StatusTemporaryRedirect, gin.H{
+			"error":  "not leader",
+			"leader": h.kv.GetLeader(),
+		})
+		return
+	}
+
+	if err := h.kv.RemoveNode(req.NodeID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "node removed successfully",
+		"node_id": req.NodeID,
+	})
+}
+
+// GetClusterConfig 获取集群配置
+func (h *Handler) GetClusterConfig(c *gin.Context) {
+	config, err := h.kv.GetClusterConfig()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, config)
 }

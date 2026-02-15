@@ -54,8 +54,9 @@ func NewKVService(dataDir string, nodeID string, raftAddr string, peers []string
 	// 创建写入批处理器 (合并并发写入提升吞吐量, 流水线架构)
 	kv.batcher = newWriteBatcher(kv, 200)
 
-	// 如果是第一个节点，进行Bootstrap
-	if nodeID == "node1" {
+	// 如果是第一个节点且 peers 不为空，进行 Bootstrap
+	// peers 为空表示这是要动态加入现有集群的新节点，不应自行 Bootstrap
+	if nodeID == "node1" && len(peers) > 0 {
 		if err := raftNode.Bootstrap(peers); err != nil {
 			kv.logger.Printf("Bootstrap warning (may already be bootstrapped): %v", err)
 		}
@@ -157,6 +158,58 @@ func (kv *KVService) Delete(key string) error {
 
 	kv.logger.Printf("Delete key=%s", key)
 	return nil
+}
+
+// AddNode 添加新节点到集群
+func (kv *KVService) AddNode(nodeID, address string) error {
+	if !kv.raft.IsLeader() {
+		return fmt.Errorf("not leader, leader is: %s", kv.raft.GetLeader())
+	}
+
+	kv.logger.Printf("Adding node %s at %s to cluster", nodeID, address)
+	if err := kv.raft.AddVoter(nodeID, address); err != nil {
+		return fmt.Errorf("failed to add node: %w", err)
+	}
+
+	kv.logger.Printf("Node %s added successfully", nodeID)
+	return nil
+}
+
+// RemoveNode 从集群移除节点
+func (kv *KVService) RemoveNode(nodeID string) error {
+	if !kv.raft.IsLeader() {
+		return fmt.Errorf("not leader, leader is: %s", kv.raft.GetLeader())
+	}
+
+	kv.logger.Printf("Removing node %s from cluster", nodeID)
+	if err := kv.raft.RemoveServer(nodeID); err != nil {
+		return fmt.Errorf("failed to remove node: %w", err)
+	}
+
+	kv.logger.Printf("Node %s removed successfully", nodeID)
+	return nil
+}
+
+// GetClusterConfig 获取集群配置信息
+func (kv *KVService) GetClusterConfig() (map[string]interface{}, error) {
+	config, err := kv.raft.GetConfiguration()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get configuration: %w", err)
+	}
+
+	servers := make([]map[string]string, 0)
+	for _, server := range config.Servers {
+		servers = append(servers, map[string]string{
+			"id":       string(server.ID),
+			"address":  string(server.Address),
+			"suffrage": server.Suffrage.String(),
+		})
+	}
+
+	return map[string]interface{}{
+		"servers": servers,
+		"leader":  kv.raft.GetLeader(),
+	}, nil
 }
 
 // BenchmarkResult 服务端基准测试结果

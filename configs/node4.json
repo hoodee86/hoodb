@@ -1,0 +1,7 @@
+{
+  "nodeId": "node4",
+  "httpAddr": ":8004",
+  "raftAddr": "127.0.0.1:9004",
+  "dataDir": "./data/node4",
+  "peers": []
+}
