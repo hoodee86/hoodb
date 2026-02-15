@@ -11,8 +11,14 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	hraft "github.com/hashicorp/raft"
+	"github.com/shauntso/hoodb/internal/config"
 	"github.com/shauntso/hoodb/internal/raft"
 	"github.com/shauntso/hoodb/internal/storage"
+)
+
+const (
+	// maxBatchSize 写入批处理器的最大批量大小
+	maxBatchSize = 200
 )
 
 // KVService 分布式KV服务
@@ -25,25 +31,24 @@ type KVService struct {
 }
 
 // NewKVService 创建新的KV服务
-func NewKVService(dataDir string, nodeID string, raftAddr string, peers []string) (*KVService, error) {
-	// 创建RocksDB存储
-	store, err := storage.NewPebbleStore(dataDir + "/rocksdb")
+func NewKVService(cfg *config.Config) (*KVService, error) {
+	// 创建 Pebble 存储引擎
+	store, err := storage.NewPebbleStore(cfg.StoreDir())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create store: %w", err)
 	}
 
-	// 创建KV服务实例
 	kv := &KVService{
 		store:  store,
-		logger: log.New(log.Writer(), fmt.Sprintf("[%s] ", nodeID), log.LstdFlags),
+		logger: log.New(log.Writer(), fmt.Sprintf("[%s] ", cfg.NodeID), log.LstdFlags),
 	}
 
-	// 创建Raft节点
+	// 创建 Raft 节点，KVService 实现了 FSM 接口
 	raftNode, err := raft.NewRaftNode(&raft.Config{
-		NodeID:   nodeID,
-		BindAddr: raftAddr,
-		DataDir:  dataDir + "/raft",
-		FSM:      kv, // KVService实现了FSM接口
+		NodeID:   cfg.NodeID,
+		BindAddr: cfg.RaftAddr,
+		DataDir:  cfg.RaftDir(),
+		FSM:      kv,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create raft node: %w", err)
@@ -52,17 +57,17 @@ func NewKVService(dataDir string, nodeID string, raftAddr string, peers []string
 	kv.raft = raftNode
 
 	// 创建写入批处理器 (合并并发写入提升吞吐量, 流水线架构)
-	kv.batcher = newWriteBatcher(kv, 200)
+	kv.batcher = newWriteBatcher(kv, maxBatchSize)
 
 	// 如果是第一个节点且 peers 不为空，进行 Bootstrap
 	// peers 为空表示这是要动态加入现有集群的新节点，不应自行 Bootstrap
-	if nodeID == "node1" && len(peers) > 0 {
-		if err := raftNode.Bootstrap(peers); err != nil {
+	if cfg.NodeID == "node1" && len(cfg.Peers) > 0 {
+		if err := raftNode.Bootstrap(cfg.Peers); err != nil {
 			kv.logger.Printf("Bootstrap warning (may already be bootstrapped): %v", err)
 		}
 	}
 
-	// 等待Leader选举
+	// 等待 Leader 选举
 	if err := raftNode.WaitForLeader(30 * time.Second); err != nil {
 		kv.logger.Printf("Warning: %v", err)
 	}
@@ -401,11 +406,11 @@ type fsmSnapshot struct {
 func (f *fsmSnapshot) Persist(sink hraft.SnapshotSink) error {
 	defer sink.Close()
 
-	// 创建迭代器遍历所有数据
-	iter, err := f.store.NewIterator()
+	// 基于 Pebble 快照创建迭代器（而非 live DB），保证快照数据一致性
+	iter, err := f.store.NewSnapshotIterator(f.snapshot)
 	if err != nil {
 		sink.Cancel()
-		return fmt.Errorf("failed to create iterator: %w", err)
+		return fmt.Errorf("failed to create snapshot iterator: %w", err)
 	}
 	defer iter.Close()
 

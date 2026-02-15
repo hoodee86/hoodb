@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8001/api/v1';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -54,7 +54,9 @@ export const getClusterStats = async (): Promise<ClusterStats> => {
 };
 
 export const healthCheck = async (): Promise<{ status: string }> => {
-  const response = await api.get('/health');
+  // /health 是根级别端点，不在 /api/v1 下
+  const baseHost = (process.env.REACT_APP_API_URL || 'http://localhost:8001').replace(/\/api\/v1\/?$/, '');
+  const response = await axios.get(`${baseHost}/health`);
   return response.data;
 };
 

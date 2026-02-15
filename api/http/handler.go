@@ -27,8 +27,48 @@ func (h *Handler) SetupRoutes() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
-	// CORS中间件
-	r.Use(func(c *gin.Context) {
+	r.Use(corsMiddleware())
+
+	// ----- /api/v1 路由组 -----
+	v1 := r.Group("/api/v1")
+	{
+		// KV 操作
+		v1.PUT("/kv/:key", h.PutKey)
+		v1.GET("/kv/:key", h.GetKey)
+		v1.DELETE("/kv/:key", h.DeleteKey)
+		v1.POST("/kv/batch", h.BatchPut)
+
+		// 集群管理
+		v1.POST("/cluster/add", h.AddNode)
+		v1.POST("/cluster/remove", h.RemoveNode)
+		v1.GET("/cluster/config", h.GetClusterConfig)
+		v1.GET("/cluster/stats", h.GetStatus)
+
+		// 基准测试
+		v1.POST("/benchmark", h.RunBenchmark)
+	}
+
+	// ----- 不带版本号的兼容路由（保持向后兼容） -----
+	r.PUT("/kv/:key", h.PutKey)
+	r.GET("/kv/:key", h.GetKey)
+	r.DELETE("/kv/:key", h.DeleteKey)
+	r.POST("/kv/batch", h.BatchPut)
+	r.POST("/benchmark", h.RunBenchmark)
+	r.POST("/cluster/add", h.AddNode)
+	r.POST("/cluster/remove", h.RemoveNode)
+	r.GET("/cluster/config", h.GetClusterConfig)
+	r.GET("/cluster/stats", h.GetStatus)
+
+	// ----- 全局状态 -----
+	r.GET("/status", h.GetStatus)
+	r.GET("/health", h.HealthCheck)
+
+	return r
+}
+
+// corsMiddleware 标准 CORS 中间件
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -37,32 +77,8 @@ func (h *Handler) SetupRoutes() *gin.Engine {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
-
 		c.Next()
-	})
-
-	// KV操作接口
-	r.PUT("/kv/:key", h.PutKey)
-	r.GET("/kv/:key", h.GetKey)
-	r.DELETE("/kv/:key", h.DeleteKey)
-
-	// 批量操作接口
-	r.POST("/kv/batch", h.BatchPut)
-
-	// 基准测试接口
-	r.POST("/benchmark", h.RunBenchmark)
-
-	// 集群管理接口
-	r.POST("/cluster/add", h.AddNode)
-	r.POST("/cluster/remove", h.RemoveNode)
-	r.GET("/cluster/config", h.GetClusterConfig)
-
-	// 状态接口
-	r.GET("/status", h.GetStatus)
-	r.GET("/cluster/stats", h.GetStatus)
-	r.GET("/health", h.HealthCheck)
-
-	return r
+	}
 }
 
 // retryOnLeaderChange 重试机制：在Leader切换时自动重试
@@ -278,10 +294,30 @@ func (h *Handler) GetStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
-// HealthCheck 健康检查
+// HealthCheck 健康检查（返回真实集群状态）
 func (h *Handler) HealthCheck(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"status": "healthy",
+	stats := h.kv.GetStats()
+	state, _ := stats["state"].(string)
+	leader, _ := stats["leader"].(string)
+
+	healthy := state == "Leader" || state == "Follower"
+	status := "healthy"
+	if !healthy {
+		status = "degraded"
+	}
+	if leader == "" {
+		status = "no_leader"
+	}
+
+	code := http.StatusOK
+	if !healthy {
+		code = http.StatusServiceUnavailable
+	}
+
+	c.JSON(code, gin.H{
+		"status": status,
+		"state":  state,
+		"leader": leader,
 	})
 }
 

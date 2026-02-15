@@ -152,10 +152,14 @@ func (s *PebbleStore) ReleaseSnapshot(snapshot *pebble.Snapshot) {
 	snapshot.Close()
 }
 
-// NewIterator 创建迭代器
+// NewIterator 创建迭代器 (基于 live DB)
 func (s *PebbleStore) NewIterator() (*pebble.Iterator, error) {
-	iter, err := s.db.NewIter(nil)
-	return iter, err
+	return s.db.NewIter(nil)
+}
+
+// NewSnapshotIterator 基于快照创建迭代器（用于 FSM Snapshot，保证一致性读）
+func (s *PebbleStore) NewSnapshotIterator(snap *pebble.Snapshot) (*pebble.Iterator, error) {
+	return snap.NewIter(nil)
 }
 
 // Close 关闭数据库
