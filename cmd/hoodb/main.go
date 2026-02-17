@@ -40,7 +40,7 @@ func main() {
 	defer kvService.Close()
 
 	// 创建并启动 HTTP 服务器
-	handler := httpapi.NewHandler(kvService)
+	handler := httpapi.NewHandler(kvService, cfg)
 	router := handler.SetupRoutes()
 
 	go func() {

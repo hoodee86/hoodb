@@ -33,26 +33,32 @@ var (
 // ─── Result ────────────────────────────────────────────
 
 type benchResult struct {
-	group   string
-	name    string
-	ops     int
-	success int
-	failed  int
-	dur     time.Duration
-	opsPerS float64
+	group     string
+	name      string
+	ops       int
+	success   int
+	failed    int
+	dur       time.Duration
+	opsPerS   float64
+	valueSize int // bytes per operation
+	mbPerS    float64
 }
 
 func (r benchResult) String() string {
-	return fmt.Sprintf("%-38s  %10.0f ops/s  %8d ok  %6d fail  %v",
-		r.name, r.opsPerS, r.success, r.failed, r.dur.Round(time.Millisecond))
+	return fmt.Sprintf("%-38s  %10.1f MB/s  %10.0f ops/s  %8d ok  %6d fail  %v",
+		r.name, r.mbPerS, r.opsPerS, r.success, r.failed, r.dur.Round(time.Millisecond))
 }
 
 var allResults []benchResult
 
 func record(r benchResult) {
 	r.opsPerS = float64(r.success) / r.dur.Seconds()
+	if r.valueSize > 0 {
+		totalBytes := float64(r.success*r.valueSize) / (1024 * 1024)
+		r.mbPerS = totalBytes / r.dur.Seconds()
+	}
 	allResults = append(allResults, r)
-	fmt.Printf("  ✓ %-36s %10.0f ops/s  (%v)\n", r.name, r.opsPerS, r.dur.Round(time.Millisecond))
+	fmt.Printf("  ✓ %-36s %10.1f MB/s  (%v)\n", r.name, r.mbPerS, r.dur.Round(time.Millisecond))
 }
 
 // ─── Helpers ────────────────────────────────────────────
@@ -128,7 +134,7 @@ func benchHooDBWriteConcurrent(baseURL string, n, conc, vsize int) {
 
 	record(benchResult{
 		group: "HooDB API", name: fmt.Sprintf("HooDB API Write (%d 并发)", conc),
-		ops: n, success: int(success), failed: int(failed), dur: dur,
+		ops: n, success: int(success), failed: int(failed), dur: dur, valueSize: vsize,
 	})
 }
 
@@ -170,7 +176,7 @@ func benchHooDBWriteBatch(baseURL string, n, bsize, vsize int) {
 
 	record(benchResult{
 		group: "HooDB API", name: fmt.Sprintf("HooDB API BatchWrite (batch=%d)", bsize),
-		ops: n, success: int(success), failed: int(failed), dur: dur,
+		ops: n, success: int(success), failed: int(failed), dur: dur, valueSize: vsize,
 	})
 }
 
@@ -225,7 +231,7 @@ func benchHooDBWriteBatchConcurrent(baseURL string, n, bsize, conc, vsize int) {
 
 	record(benchResult{
 		group: "HooDB API", name: fmt.Sprintf("HooDB API BatchWrite (%d并发, batch=%d)", conc, bsize),
-		ops: n, success: int(success), failed: int(failed), dur: dur,
+		ops: n, success: int(success), failed: int(failed), dur: dur, valueSize: vsize,
 	})
 }
 
@@ -268,7 +274,7 @@ func benchHooDBReadConcurrent(baseURL string, n, conc int) {
 
 	record(benchResult{
 		group: "HooDB API", name: fmt.Sprintf("HooDB API Read (%d 并发)", conc),
-		ops: n, success: int(success), failed: int(failed), dur: dur,
+		ops: n, success: int(success), failed: int(failed), dur: dur, valueSize: *valueSize,
 	})
 }
 
@@ -304,7 +310,7 @@ func benchHooDBServerSide(baseURL string, n, conc int) {
 
 	record(benchResult{
 		group: "HooDB API", name: fmt.Sprintf("HooDB Server-side (%d 并发)", conc),
-		ops: n, success: result.Success, failed: result.Failed, dur: dur,
+		ops: n, success: result.Success, failed: result.Failed, dur: dur, valueSize: *valueSize,
 	})
 }
 
@@ -336,7 +342,7 @@ func benchLevelDBWriteSync(n, vsize int) {
 
 	record(benchResult{
 		group: "LevelDB", name: "LevelDB SeqWrite (Sync)",
-		ops: n, success: success, failed: n - success, dur: dur,
+		ops: n, success: success, failed: n - success, dur: dur, valueSize: vsize,
 	})
 }
 
@@ -367,7 +373,7 @@ func benchLevelDBWriteNoSync(n, vsize int) {
 
 	record(benchResult{
 		group: "LevelDB", name: "LevelDB SeqWrite (NoSync)",
-		ops: n, success: success, failed: n - success, dur: dur,
+		ops: n, success: success, failed: n - success, dur: dur, valueSize: vsize,
 	})
 }
 
@@ -404,7 +410,7 @@ func benchLevelDBWriteBatch(n, bsize, vsize int) {
 
 	record(benchResult{
 		group: "LevelDB", name: fmt.Sprintf("LevelDB BatchWrite (batch=%d)", bsize),
-		ops: n, success: success, failed: n - success, dur: dur,
+		ops: n, success: success, failed: n - success, dur: dur, valueSize: vsize,
 	})
 }
 
@@ -450,7 +456,7 @@ func benchLevelDBWriteConcurrent(n, conc, vsize int) {
 
 	record(benchResult{
 		group: "LevelDB", name: fmt.Sprintf("LevelDB ConcurrentWrite (%d 并发)", conc),
-		ops: n, success: int(success), failed: int(failed), dur: dur,
+		ops: n, success: int(success), failed: int(failed), dur: dur, valueSize: vsize,
 	})
 }
 
@@ -485,7 +491,7 @@ func benchLevelDBRead(n, vsize int) {
 
 	record(benchResult{
 		group: "LevelDB", name: "LevelDB SeqRead",
-		ops: n, success: success, failed: n - success, dur: dur,
+		ops: n, success: success, failed: n - success, dur: dur, valueSize: vsize,
 	})
 }
 
@@ -536,19 +542,19 @@ func benchLevelDBReadConcurrent(n, conc, vsize int) {
 
 	record(benchResult{
 		group: "LevelDB", name: fmt.Sprintf("LevelDB ConcurrentRead (%d 并发)", conc),
-		ops: n, success: int(success), failed: int(failed), dur: dur,
+		ops: n, success: int(success), failed: int(failed), dur: dur, valueSize: vsize,
 	})
 }
 
 // ─── 输出报告 ──────────────────────────────────────────
 
 func printReport() {
-	sep := strings.Repeat("=", 88)
-	thin := strings.Repeat("-", 88)
+	sep := strings.Repeat("=", 100)
+	thin := strings.Repeat("-", 100)
 
 	fmt.Println()
 	fmt.Println("+" + sep + "+")
-	fmt.Printf("|  %-86s|\n", fmt.Sprintf("HooDB vs LevelDB Performance  (n=%d, value=%dB, concurrency=%d)", *numOps, *valueSize, *concurrency))
+	fmt.Printf("|  %-98s|\n", fmt.Sprintf("HooDB vs LevelDB Throughput (n=%d, value=%dB, concurrency=%d)", *numOps, *valueSize, *concurrency))
 	fmt.Println("+" + sep + "+")
 
 	groups := []string{}
@@ -562,24 +568,24 @@ func printReport() {
 
 	for gi, g := range groups {
 		if gi > 0 {
-			fmt.Println("|  " + thin[:84] + "  |")
+			fmt.Println("|  " + thin[:96] + "  |")
 		}
-		fmt.Printf("|  %-86s|\n", "["+g+"]")
+		fmt.Printf("|  %-98s|\n", "["+g+"]")
 		for _, r := range grouped[g] {
-			barLen := int(r.opsPerS / 1000)
+			barLen := int(r.mbPerS / 50)
 			if barLen > 30 {
 				barLen = 30
 			}
 			bar := strings.Repeat("#", barLen)
-			fmt.Printf("|  %-38s %10.0f ops/s  %-30s |\n", r.name, r.opsPerS, bar)
+			fmt.Printf("|  %-38s %10.1f MB/s %10.0f ops/s  %-25s |\n", r.name, r.mbPerS, r.opsPerS, bar)
 		}
 	}
 	fmt.Println("+" + sep + "+")
 
-	// Write ranking
+	// Write ranking by MB/s
 	fmt.Println()
-	fmt.Println("Write Performance Ranking:")
-	fmt.Println(strings.Repeat("-", 60))
+	fmt.Println("Write Throughput Ranking (MB/s):")
+	fmt.Println(strings.Repeat("-", 70))
 	writeResults := []benchResult{}
 	for _, r := range allResults {
 		if strings.Contains(strings.ToLower(r.name), "write") {
@@ -587,16 +593,16 @@ func printReport() {
 		}
 	}
 	sort.Slice(writeResults, func(i, j int) bool {
-		return writeResults[i].opsPerS > writeResults[j].opsPerS
+		return writeResults[i].mbPerS > writeResults[j].mbPerS
 	})
 	for i, r := range writeResults {
-		fmt.Printf("  #%d  %-38s %10.0f ops/s\n", i+1, r.name, r.opsPerS)
+		fmt.Printf("  #%d  %-38s %10.1f MB/s  %10.0f ops/s\n", i+1, r.name, r.mbPerS, r.opsPerS)
 	}
 
-	// Read ranking
+	// Read ranking by MB/s
 	fmt.Println()
-	fmt.Println("Read Performance Ranking:")
-	fmt.Println(strings.Repeat("-", 60))
+	fmt.Println("Read Throughput Ranking (MB/s):")
+	fmt.Println(strings.Repeat("-", 70))
 	readResults := []benchResult{}
 	for _, r := range allResults {
 		if strings.Contains(strings.ToLower(r.name), "read") {
@@ -604,10 +610,10 @@ func printReport() {
 		}
 	}
 	sort.Slice(readResults, func(i, j int) bool {
-		return readResults[i].opsPerS > readResults[j].opsPerS
+		return readResults[i].mbPerS > readResults[j].mbPerS
 	})
 	for i, r := range readResults {
-		fmt.Printf("  #%d  %-38s %10.0f ops/s\n", i+1, r.name, r.opsPerS)
+		fmt.Printf("  #%d  %-38s %10.1f MB/s  %10.0f ops/s\n", i+1, r.name, r.mbPerS, r.opsPerS)
 	}
 }
 

@@ -38,6 +38,7 @@ type Config struct {
 	BindAddr string
 	DataDir  string
 	FSM      FSM
+	NoSync   bool // 是否跳过 BoltDB fsync (默认 false = 安全模式)
 }
 
 // NewRaftNode 创建新的Raft节点
@@ -86,13 +87,13 @@ func NewRaftNode(cfg *Config) (*RaftNode, error) {
 	}
 
 	// 创建日志+稳定存储
-	// 使用 BoltDB v2 BatchedBoltStore + NoSync:
+	// 使用 BoltDB v2 BatchedBoltStore:
 	//   - BatchedBoltStore 让 Raft 将多条日志合并为一次 BoltDB 事务
-	//   - NoSync 跳过 fsync (安全性由 Raft 多副本复制保证)
-	//   两者配合消除了 fsync 瓶颈, 写入吞吐量可提升 10-50 倍
+	//   - NoSync 可配置: true 跳过 fsync (安全性由 Raft 多副本复制保证，高性能)
+	//                     false 每次写入 fsync (更安全，但性能较低)
 	boltStore, err := raftboltdb.New(raftboltdb.Options{
 		Path:   filepath.Join(cfg.DataDir, "raft.db"),
-		NoSync: true,
+		NoSync: cfg.NoSync,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bolt store: %w", err)
@@ -144,6 +145,12 @@ func (rn *RaftNode) Apply(cmd []byte, timeout time.Duration) error {
 	future := rn.raft.Apply(cmd, timeout)
 	if err := future.Error(); err != nil {
 		return fmt.Errorf("failed to apply command: %w", err)
+	}
+	// 检查 FSM Apply 返回的错误 (future.Response() 是 FSM.Apply() 的返回值)
+	if resp := future.Response(); resp != nil {
+		if err, ok := resp.(error); ok {
+			return fmt.Errorf("FSM apply error: %w", err)
+		}
 	}
 	return nil
 }

@@ -1,6 +1,8 @@
 package service
 
 import (
+	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,11 +25,13 @@ const (
 
 // KVService 分布式KV服务
 type KVService struct {
-	store   *storage.PebbleStore
-	raft    *raft.RaftNode
-	logger  *log.Logger
-	mu      sync.RWMutex
-	batcher *writeBatcher
+	store      *storage.PebbleStore
+	raft       *raft.RaftNode
+	logger     *log.Logger
+	mu         sync.RWMutex
+	batcher    *writeBatcher
+	httpAddr   string            // 本节点的 HTTP 地址
+	raftToHTTP map[string]string // Raft 地址 -> HTTP 地址映射
 }
 
 // NewKVService 创建新的KV服务
@@ -39,9 +43,20 @@ func NewKVService(cfg *config.Config) (*KVService, error) {
 	}
 
 	kv := &KVService{
-		store:  store,
-		logger: log.New(log.Writer(), fmt.Sprintf("[%s] ", cfg.NodeID), log.LstdFlags),
+		store:      store,
+		logger:     log.New(log.Writer(), fmt.Sprintf("[%s] ", cfg.NodeID), log.LstdFlags),
+		httpAddr:   cfg.HTTPAddr,
+		raftToHTTP: make(map[string]string),
 	}
+
+	// 构建 Raft 地址 -> HTTP 地址映射 (用于 Leader 重定向)
+	if cfg.HTTPPeers != nil {
+		for raftAddr, httpAddr := range cfg.HTTPPeers {
+			kv.raftToHTTP[raftAddr] = httpAddr
+		}
+	}
+	// 始终包含自身
+	kv.raftToHTTP[cfg.RaftAddr] = cfg.HTTPAddr
 
 	// 创建 Raft 节点，KVService 实现了 FSM 接口
 	raftNode, err := raft.NewRaftNode(&raft.Config{
@@ -49,6 +64,7 @@ func NewKVService(cfg *config.Config) (*KVService, error) {
 		BindAddr: cfg.RaftAddr,
 		DataDir:  cfg.RaftDir(),
 		FSM:      kv,
+		NoSync:   cfg.GetNoSync(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create raft node: %w", err)
@@ -332,31 +348,110 @@ func (kv *KVService) Snapshot() (hraft.FSMSnapshot, error) {
 	}, nil
 }
 
-// Restore 从快照恢复
+// Restore 从快照恢复 (支持新的流式二进制格式和旧的 JSON 格式)
 func (kv *KVService) Restore(rc io.ReadCloser) error {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
 	defer rc.Close()
 
-	// 读取快照数据
-	decoder := json.NewDecoder(rc)
-	var data map[string]string
-	if err := decoder.Decode(&data); err != nil {
-		return fmt.Errorf("failed to decode snapshot: %w", err)
-	}
-
 	// 先清除旧数据，确保状态机完全替换为快照状态
 	if err := kv.store.ClearAll(); err != nil {
 		kv.logger.Printf("Warning: failed to clear store before restore: %v", err)
 	}
 
-	// 使用批量写入恢复数据（NoSync，避免每条都 fsync 导致恢复极慢）
+	// 使用 bufio.Reader 来 peek 格式
+	br := bufio.NewReader(rc)
+	header, err := br.Peek(len(snapshotMagic))
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("failed to peek snapshot header: %w", err)
+	}
+
+	if string(header) == string(snapshotMagic) {
+		// 新的流式二进制格式
+		return kv.restoreBinary(br)
+	}
+
+	// 旧的 JSON 格式 (向后兼容)
+	return kv.restoreJSON(br)
+}
+
+// restoreBinary 从流式二进制格式恢复
+func (kv *KVService) restoreBinary(br *bufio.Reader) error {
+	// 跳过 magic header
+	if _, err := br.Discard(len(snapshotMagic)); err != nil {
+		return fmt.Errorf("failed to skip snapshot header: %w", err)
+	}
+
+	buf := make([]byte, 4)
+	batch := make(map[string]string)
+	count := 0
+	const batchLimit = 1000
+
+	for {
+		// 读取 key 长度
+		if _, err := io.ReadFull(br, buf); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			}
+			return fmt.Errorf("failed to read key length: %w", err)
+		}
+		keyLen := binary.BigEndian.Uint32(buf)
+
+		// 读取 key
+		key := make([]byte, keyLen)
+		if _, err := io.ReadFull(br, key); err != nil {
+			return fmt.Errorf("failed to read key: %w", err)
+		}
+
+		// 读取 value 长度
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return fmt.Errorf("failed to read value length: %w", err)
+		}
+		valueLen := binary.BigEndian.Uint32(buf)
+
+		// 读取 value
+		value := make([]byte, valueLen)
+		if _, err := io.ReadFull(br, value); err != nil {
+			return fmt.Errorf("failed to read value: %w", err)
+		}
+
+		batch[string(key)] = string(value)
+		count++
+
+		// 分批写入避免 OOM
+		if len(batch) >= batchLimit {
+			if err := kv.store.PutBatch(batch); err != nil {
+				return fmt.Errorf("failed to restore batch: %w", err)
+			}
+			batch = make(map[string]string)
+		}
+	}
+
+	// 写入剩余数据
+	if len(batch) > 0 {
+		if err := kv.store.PutBatch(batch); err != nil {
+			return fmt.Errorf("failed to restore batch: %w", err)
+		}
+	}
+
+	kv.logger.Printf("Restored %d keys from snapshot (binary streaming)", count)
+	return nil
+}
+
+// restoreJSON 从旧的 JSON 格式恢复 (向后兼容)
+func (kv *KVService) restoreJSON(br *bufio.Reader) error {
+	decoder := json.NewDecoder(br)
+	var data map[string]string
+	if err := decoder.Decode(&data); err != nil {
+		return fmt.Errorf("failed to decode snapshot: %w", err)
+	}
+
 	if err := kv.store.PutBatch(data); err != nil {
 		return fmt.Errorf("failed to restore batch: %w", err)
 	}
 
-	kv.logger.Printf("Restored %d keys from snapshot", len(data))
+	kv.logger.Printf("Restored %d keys from snapshot (JSON legacy)", len(data))
 	return nil
 }
 
@@ -368,6 +463,42 @@ func (kv *KVService) IsLeader() bool {
 // GetLeader 获取Leader地址
 func (kv *KVService) GetLeader() string {
 	return kv.raft.GetLeader()
+}
+
+// GetLeaderHTTPAddr 获取 Leader 的 HTTP 地址 (用于客户端重定向)
+func (kv *KVService) GetLeaderHTTPAddr() string {
+	raftAddr := kv.raft.GetLeader()
+	if httpAddr, ok := kv.raftToHTTP[raftAddr]; ok {
+		return httpAddr
+	}
+	return raftAddr // 降级: 如果映射中找不到, 返回 Raft 地址
+}
+
+// KeyValue 键值对
+type KeyValue struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// ListKeys 按前缀扫描 Key，支持游标分页
+func (kv *KVService) ListKeys(prefix string, limit int, cursor string) ([]KeyValue, string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	results, nextCursor, err := kv.store.ScanPrefix([]byte(prefix), limit, []byte(cursor))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to scan prefix: %w", err)
+	}
+
+	kvs := make([]KeyValue, len(results))
+	for i, r := range results {
+		kvs[i] = KeyValue{Key: r.Key, Value: r.Value}
+	}
+	return kvs, nextCursor, nil
 }
 
 // GetStats 获取服务统计信息
@@ -402,7 +533,11 @@ type fsmSnapshot struct {
 	snapshot *pebble.Snapshot
 }
 
-// Persist 持久化快照
+// snapshotMagic 快照格式标识 (用于区分新的流式二进制格式和旧的 JSON 格式)
+var snapshotMagic = []byte("HDBV1\n")
+
+// Persist 流式持久化快照 (不将所有数据加载到内存)
+// 格式: [magic header][4-byte key len][key][4-byte value len][value]...
 func (f *fsmSnapshot) Persist(sink hraft.SnapshotSink) error {
 	defer sink.Close()
 
@@ -414,23 +549,43 @@ func (f *fsmSnapshot) Persist(sink hraft.SnapshotSink) error {
 	}
 	defer iter.Close()
 
-	data := make(map[string]string)
+	// 写入 magic header
+	if _, err := sink.Write(snapshotMagic); err != nil {
+		sink.Cancel()
+		return fmt.Errorf("failed to write snapshot header: %w", err)
+	}
+
+	buf := make([]byte, 4)
 	for iter.First(); iter.Valid(); iter.Next() {
-		key := string(iter.Key())
-		value := make([]byte, len(iter.Value()))
-		copy(value, iter.Value())
-		data[key] = string(value)
+		key := iter.Key()
+		value := iter.Value()
+
+		// 写入 key 长度 + key
+		binary.BigEndian.PutUint32(buf, uint32(len(key)))
+		if _, err := sink.Write(buf); err != nil {
+			sink.Cancel()
+			return err
+		}
+		if _, err := sink.Write(key); err != nil {
+			sink.Cancel()
+			return err
+		}
+
+		// 写入 value 长度 + value
+		binary.BigEndian.PutUint32(buf, uint32(len(value)))
+		if _, err := sink.Write(buf); err != nil {
+			sink.Cancel()
+			return err
+		}
+		if _, err := sink.Write(value); err != nil {
+			sink.Cancel()
+			return err
+		}
 	}
 
 	if err := iter.Error(); err != nil {
-		return fmt.Errorf("iterator error: %w", err)
-	}
-
-	// 序列化数据
-	encoder := json.NewEncoder(sink)
-	if err := encoder.Encode(data); err != nil {
 		sink.Cancel()
-		return fmt.Errorf("failed to encode snapshot: %w", err)
+		return fmt.Errorf("iterator error: %w", err)
 	}
 
 	return nil

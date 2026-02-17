@@ -162,6 +162,73 @@ func (s *PebbleStore) NewSnapshotIterator(snap *pebble.Snapshot) (*pebble.Iterat
 	return snap.NewIter(nil)
 }
 
+// KeyValue 键值对
+type KeyValue struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// ScanPrefix 按前缀扫描 Key，支持游标分页
+// prefix: 搜索前缀, limit: 最大返回条数, cursor: 起始游标 (上次返回的 nextCursor)
+// 返回: 结果列表, 下一页游标 (空字符串表示没有更多数据), 错误
+func (s *PebbleStore) ScanPrefix(prefix []byte, limit int, cursor []byte) ([]KeyValue, string, error) {
+	iterOpts := &pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: prefixUpperBound(prefix),
+	}
+	iter, err := s.db.NewIter(iterOpts)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create prefix iterator: %w", err)
+	}
+	defer iter.Close()
+
+	var seekKey []byte
+	if len(cursor) > 0 {
+		seekKey = cursor
+	} else {
+		seekKey = prefix
+	}
+
+	var results []KeyValue
+	for iter.SeekGE(seekKey); iter.Valid() && len(results) < limit; iter.Next() {
+		key := make([]byte, len(iter.Key()))
+		copy(key, iter.Key())
+		value := make([]byte, len(iter.Value()))
+		copy(value, iter.Value())
+		results = append(results, KeyValue{Key: string(key), Value: string(value)})
+	}
+
+	var nextCursor string
+	if iter.Valid() {
+		// 还有更多数据
+		key := make([]byte, len(iter.Key()))
+		copy(key, iter.Key())
+		nextCursor = string(key)
+	}
+
+	if err := iter.Error(); err != nil {
+		return nil, "", fmt.Errorf("iterator error: %w", err)
+	}
+
+	return results, nextCursor, nil
+}
+
+// prefixUpperBound 计算前缀的上界 (用于限定迭代器范围)
+func prefixUpperBound(prefix []byte) []byte {
+	if len(prefix) == 0 {
+		return nil // 无前缀 = 扫描所有 key
+	}
+	upper := make([]byte, len(prefix))
+	copy(upper, prefix)
+	for i := len(upper) - 1; i >= 0; i-- {
+		if upper[i] < 0xff {
+			upper[i]++
+			return upper[:i+1]
+		}
+	}
+	return nil // 前缀全是 0xff
+}
+
 // Close 关闭数据库
 func (s *PebbleStore) Close() error {
 	s.mu.Lock()
