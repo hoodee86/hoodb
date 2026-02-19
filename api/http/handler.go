@@ -186,21 +186,32 @@ func (h *Handler) PutKey(c *gin.Context) {
 	if !h.kv.IsLeader() {
 		leader := h.kv.GetLeaderHTTPAddr()
 		if leader == "" {
-			// 无Leader时重试等待
-			for i := 0; i < 5; i++ {
-				time.Sleep(200 * time.Millisecond)
-				leader = h.kv.GetLeaderHTTPAddr()
-				if leader != "" {
-					break
+			// 无Leader时短暂重试 - 使用ticker避免阻塞整个goroutine
+			ticker := time.NewTicker(200 * time.Millisecond)
+			defer ticker.Stop()
+			
+			foundLeader := false
+			for i := 0; i < 5 && !foundLeader; i++ {
+				select {
+				case <-ticker.C:
+					leader = h.kv.GetLeaderHTTPAddr()
+					if leader != "" {
+						foundLeader = true
+					}
+				case <-c.Request.Context().Done():
+					// Client disconnected
+					return
 				}
 			}
-			if leader == "" {
+			
+			if !foundLeader {
 				c.JSON(http.StatusServiceUnavailable, gin.H{
 					"error": "no leader available, cluster may be electing",
 				})
 				return
 			}
 		}
+		
 		c.JSON(http.StatusTemporaryRedirect, gin.H{
 			"error":  "not leader",
 			"leader": leader,
