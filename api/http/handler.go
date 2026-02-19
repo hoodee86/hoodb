@@ -190,12 +190,13 @@ func (h *Handler) PutKey(c *gin.Context) {
 			ticker := time.NewTicker(200 * time.Millisecond)
 			defer ticker.Stop()
 			
-			for i := 0; i < 5; i++ {
+			foundLeader := false
+			for i := 0; i < 5 && !foundLeader; i++ {
 				select {
 				case <-ticker.C:
 					leader = h.kv.GetLeaderHTTPAddr()
 					if leader != "" {
-						goto leaderFound
+						foundLeader = true
 					}
 				case <-c.Request.Context().Done():
 					// Client disconnected
@@ -203,13 +204,14 @@ func (h *Handler) PutKey(c *gin.Context) {
 				}
 			}
 			
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error": "no leader available, cluster may be electing",
-			})
-			return
+			if !foundLeader {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error": "no leader available, cluster may be electing",
+				})
+				return
+			}
 		}
 		
-	leaderFound:
 		c.JSON(http.StatusTemporaryRedirect, gin.H{
 			"error":  "not leader",
 			"leader": leader,

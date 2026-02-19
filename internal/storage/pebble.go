@@ -254,18 +254,21 @@ func (s *PebbleStore) ClearAll() error {
 	defer iter.Close()
 
 	batch := s.db.NewBatch()
-	defer batch.Close()
 	
 	for iter.First(); iter.Valid(); iter.Next() {
 		// Delete directly using iter.Key() - no need to copy since batch copies internally
 		if err := batch.Delete(iter.Key(), nil); err != nil {
+			batch.Close()
 			return fmt.Errorf("failed to delete key in clear: %w", err)
 		}
 	}
 	if err := iter.Error(); err != nil {
+		batch.Close()
 		return fmt.Errorf("iterator error during clear: %w", err)
 	}
+	// Commit the batch - no need to Close() after successful Commit()
 	if err := batch.Commit(pebble.NoSync); err != nil {
+		batch.Close()
 		return fmt.Errorf("failed to commit clear batch: %w", err)
 	}
 	return nil
