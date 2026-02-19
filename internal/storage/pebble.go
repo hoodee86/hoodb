@@ -191,19 +191,19 @@ func (s *PebbleStore) ScanPrefix(prefix []byte, limit int, cursor []byte) ([]Key
 
 	var results []KeyValue
 	for iter.SeekGE(seekKey); iter.Valid() && len(results) < limit; iter.Next() {
-		key := make([]byte, len(iter.Key()))
-		copy(key, iter.Key())
-		value := make([]byte, len(iter.Value()))
-		copy(value, iter.Value())
-		results = append(results, KeyValue{Key: string(key), Value: string(value)})
+		// Direct string conversion without intermediate byte slice allocation
+		// This is safe because string() creates a copy internally
+		results = append(results, KeyValue{
+			Key:   string(iter.Key()),
+			Value: string(iter.Value()),
+		})
 	}
 
 	var nextCursor string
 	if iter.Valid() {
 		// 还有更多数据
-		key := make([]byte, len(iter.Key()))
-		copy(key, iter.Key())
-		nextCursor = string(key)
+		// Direct string conversion - no need for intermediate copy
+		nextCursor = string(iter.Key())
 	}
 
 	if err := iter.Error(); err != nil {
@@ -254,16 +254,15 @@ func (s *PebbleStore) ClearAll() error {
 	defer iter.Close()
 
 	batch := s.db.NewBatch()
+	defer batch.Close()
+	
 	for iter.First(); iter.Valid(); iter.Next() {
-		key := make([]byte, len(iter.Key()))
-		copy(key, iter.Key())
-		if err := batch.Delete(key, nil); err != nil {
-			batch.Close()
+		// Delete directly using iter.Key() - no need to copy since batch copies internally
+		if err := batch.Delete(iter.Key(), nil); err != nil {
 			return fmt.Errorf("failed to delete key in clear: %w", err)
 		}
 	}
 	if err := iter.Error(); err != nil {
-		batch.Close()
 		return fmt.Errorf("iterator error during clear: %w", err)
 	}
 	if err := batch.Commit(pebble.NoSync); err != nil {

@@ -95,10 +95,8 @@ func NewKVService(cfg *config.Config) (*KVService, error) {
 }
 
 // Get 获取key的值
+// Note: No lock needed - Pebble is thread-safe for reads
 func (kv *KVService) Get(key string) (string, error) {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
-
 	value, err := kv.store.Get([]byte(key))
 	if err != nil {
 		return "", fmt.Errorf("failed to get key: %w", err)
@@ -218,7 +216,8 @@ func (kv *KVService) GetClusterConfig() (map[string]interface{}, error) {
 		return nil, fmt.Errorf("failed to get configuration: %w", err)
 	}
 
-	servers := make([]map[string]string, 0)
+	// Pre-allocate with known capacity to avoid reallocation
+	servers := make([]map[string]string, 0, len(config.Servers))
 	for _, server := range config.Servers {
 		servers = append(servers, map[string]string{
 			"id":       string(server.ID),
